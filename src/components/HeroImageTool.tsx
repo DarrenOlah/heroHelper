@@ -37,7 +37,19 @@ const STORAGE_KEY = 'heroHelper-dnn-folder'
 
 export function HeroImageTool() {
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const pickerRef = useRef<HTMLDivElement | null>(null)
+  // Picker size lives in state (kept current by a ResizeObserver) so the crop
+  // overlay never reads a ref during render and re-renders when the picker resizes.
+  const [pickerSize, setPickerSize] = useState<{ w: number; h: number } | null>(null)
+  const pickerRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return
+    const measure = () => setPickerSize({ w: el.offsetWidth, h: el.offsetHeight })
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      setPickerSize(null)
+    }
+  }, [])
 
   const [state, setState] = useState<State>({
     mode: 'pc',
@@ -77,12 +89,11 @@ export function HeroImageTool() {
   const isMobile = simPreset === 'mobile'
   const showSizeWarning = !isMobile && imgNatural.w > 0 && currentPreset.width !== null && currentPreset.width > imgNatural.w
 
-  // eslint-disable-next-line react-hooks/refs
-  const cropOverlay = previewUrl && pickerRef.current && !isMobile && currentPreset.width !== null
+  const cropOverlay = previewUrl && pickerSize && !isMobile && currentPreset.width !== null
     ? computeCropOverlay({
         imgNatural,
-        pickerW: pickerRef.current.offsetWidth,
-        pickerH: pickerRef.current.offsetHeight,
+        pickerW: pickerSize.w,
+        pickerH: pickerSize.h,
         simWidth: currentPreset.width,
         heroHeight: currentHeight.calcH(currentPreset.width),
         focalX,
