@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, type ChangeEvent, type MouseEvent, type SyntheticEvent } from 'react'
+import { useState, useRef, useCallback, useEffect, type ChangeEvent, type MouseEvent, type SyntheticEvent } from 'react'
+import { createPortal } from 'react-dom'
 import {
   HEIGHT_PRESETS,
   PRESETS,
@@ -6,10 +7,14 @@ import {
   safeImageUrl,
   generateHtml,
   computeCropOverlay,
+  splitSitePath,
+  normalizeSiteOrigin,
   type HeightPresetKey,
   type SimPresetKey,
 } from '../lib/hero'
+import { parseHeroImageHtml, type HeroImageImport } from '../lib/parseHero'
 import { SectionLabel } from './SectionLabel'
+import { ImportButton, type ImportParseResult } from './ImportButton'
 
 type Mode = 'pc' | 'url'
 
@@ -34,6 +39,12 @@ interface State {
 type CustomKey = 'customMin' | 'customVw' | 'customMax'
 
 const STORAGE_KEY = 'heroHelper-dnn-folder'
+// The live site's origin (e.g. https://www.army.edu), used to load an imported
+// site-path image for the focal-point picker.
+const SITE_STORAGE_KEY = 'heroHelper-site-origin'
+
+// Same allowlist as the folder field's input handler.
+const sanitizeFolder = (val: string) => val.replace(/[^a-zA-Z0-9/_\-. ]/g, '')
 
 export function HeroImageTool() {
   const fileRef = useRef<HTMLInputElement | null>(null)
@@ -70,6 +81,16 @@ export function HeroImageTool() {
   })
   const [altWarned, setAltWarned] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Loading an imported site-path image from the live site (PC mode, no local file).
+  const [siteInput, setSiteInput] = useState(() => localStorage.getItem(SITE_STORAGE_KEY) ?? '')
+  const [previewFromSite, setPreviewFromSite] = useState(false)
+  const [siteLoadFailed, setSiteLoadFailed] = useState<string | null>(null)
+  // App's right-aligned nav-row portal target (holds the Import button).
+  const [navSlot, setNavSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNavSlot(document.getElementById('tool-nav-slot'))
+  }, [])
 
   const { mode, previewUrl, dnnFolder, dnnFile, urlInput, alt, focalX, focalY, simPreset, imgNatural, heightPreset, customMin, customVw, customMax } = state
 
@@ -106,10 +127,12 @@ export function HeroImageTool() {
     if (!file) return
     const objectUrl = URL.createObjectURL(file)
     setState(s => ({ ...s, previewUrl: safeImageUrl(objectUrl), dnnFile: file.name, imgNatural: { w: 0, h: 0 } }))
+    setPreviewFromSite(false)
+    setSiteLoadFailed(null)
   }
 
   const handleDnnFolder = (val: string) => {
-    const clean = val.replace(/[^a-zA-Z0-9/_\-. ]/g, '')
+    const clean = sanitizeFolder(val)
     localStorage.setItem(STORAGE_KEY, clean)
     setState(s => ({ ...s, dnnFolder: clean }))
   }
@@ -117,6 +140,80 @@ export function HeroImageTool() {
   const handleModeChange = (newMode: Mode) => {
     setState(s => ({ ...s, mode: newMode, previewUrl: '', urlInput: '', dnnFile: '', imgNatural: { w: 0, h: 0 } }))
     if (fileRef.current) fileRef.current.value = ''
+    setPreviewFromSite(false)
+    setSiteLoadFailed(null)
+  }
+
+  // Load the PC-mode site path from the live site so the focal point can be set
+  // without the local file. The output still uses the site path (dnnPath).
+  const loadFromSite = (originInput: string, path: string) => {
+    const origin = normalizeSiteOrigin(originInput)
+    const url = origin ? safeImageUrl(origin + path) : ''
+    if (!url) {
+      setSiteLoadFailed('Enter the site’s address, e.g. www.army.edu.')
+      return
+    }
+    localStorage.setItem(SITE_STORAGE_KEY, origin)
+    setSiteInput(origin)
+    setSiteLoadFailed(null)
+    setPreviewFromSite(true)
+    setState(s => ({ ...s, previewUrl: url, imgNatural: { w: 0, h: 0 } }))
+  }
+
+  // ---- import (parse pasted HTML back into the editor) ----
+  // The DNN folder is a saved default, not work; everything else counts.
+  const isPristine = !hasImage && !alt.trim() && focalX === 50 && focalY === 50 && heightPreset === 'standard'
+
+  const parseImport = (raw: string): ImportParseResult<HeroImageImport> => {
+    const out = parseHeroImageHtml(raw)
+    if (!out) {
+      return {
+        ok: false,
+        error: "Couldn't recognize a hero image in that HTML. Paste the code this tool generated (the whole block, or at least the image markup).",
+      }
+    }
+    const notes: string[] = []
+    if (!out.src) notes.push('No image source was found.')
+    else if (out.src.startsWith('/') && !out.src.startsWith('//') && !normalizeSiteOrigin(siteInput)) {
+      notes.push('The image is a path on your site, so it can’t be previewed yet. After importing, enter the site’s address in step 1 (or choose the local file) to set the focal point.')
+    }
+    if (!out.alt) notes.push('No alt text was found — add it before copying.')
+    if (!out.foundFocal) notes.push('No focal point was found, so it was centered.')
+    if (!out.foundHeight) notes.push('No <style> block was found, so the hero height defaulted to Standard.')
+    return { ok: true, value: out, summary: 'Imported the hero image.', notes }
+  }
+
+  const applyImport = (v: HeroImageImport) => {
+    const common = {
+      alt: v.alt,
+      focalX: v.focalX,
+      focalY: v.focalY,
+      heightPreset: v.heightPreset,
+      customMin: v.customMin,
+      customVw: v.customVw,
+      customMax: v.customMax,
+      imgNatural: { w: 0, h: 0 },
+    }
+    if (fileRef.current) fileRef.current.value = ''
+    setAltWarned(false)
+    setCopied(false)
+    setPreviewFromSite(false)
+    setSiteLoadFailed(null)
+
+    // Absolute (or protocol-relative) URLs load directly: URL mode.
+    const absolute = /^https?:\/\//i.test(v.src) ? v.src : v.src.startsWith('//') ? `https:${v.src}` : ''
+    if (absolute) {
+      setState(s => ({ ...s, ...common, mode: 'url', urlInput: absolute, previewUrl: safeImageUrl(absolute), dnnFile: '' }))
+      return
+    }
+
+    // A site path: PC mode, split into folder + filename. The folder becomes the
+    // saved default (same as typing it). With a known site address, preview it live.
+    const { folder, file } = splitSitePath(v.src)
+    const cleanFolder = sanitizeFolder(folder)
+    localStorage.setItem(STORAGE_KEY, cleanFolder)
+    setState(s => ({ ...s, ...common, mode: 'pc', urlInput: '', previewUrl: '', dnnFolder: cleanFolder, dnnFile: file }))
+    if (file && v.src.startsWith('/') && normalizeSiteOrigin(siteInput)) loadFromSite(siteInput, cleanFolder + file)
   }
 
   const handleUrlInput = (val: string) => {
@@ -162,7 +259,12 @@ export function HeroImageTool() {
     })
     setAltWarned(false)
     if (fileRef.current) fileRef.current.value = ''
+    setPreviewFromSite(false)
+    setSiteLoadFailed(null)
   }
+
+  // An imported site path with nothing to preview yet: offer the live-site load.
+  const offerSiteLoad = mode === 'pc' && !previewUrl && dnnFile !== '' && dnnPath.startsWith('/') && !dnnPath.startsWith('//')
 
   const customFields: { label: string; key: CustomKey; value: number; min: number; max: number }[] = [
     { label: 'Min (px)', key: 'customMin', value: customMin, min: 50, max: customMax - 1 },
@@ -172,6 +274,18 @@ export function HeroImageTool() {
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
+
+      {navSlot &&
+        createPortal(
+          <ImportButton
+            title="Import from generated HTML"
+            intro="Paste a hero image block this tool generated to recover the image, alt text, focal point, and height. A partial paste (just the markup, no <style>) works too — the height then defaults to Standard."
+            parse={parseImport}
+            replaceWarning={isPristine ? null : 'This replaces the image and settings currently in the editor.'}
+            onApply={applyImport}
+          />,
+          navSlot,
+        )}
 
       {/* ── LEFT: Inputs ── */}
       <div className="w-full lg:w-80 xl:w-96 shrink-0 space-y-4">
@@ -237,7 +351,43 @@ export function HeroImageTool() {
                   ? <p className="mt-1 text-xs text-gray-400 font-mono truncate">→ {dnnPath}</p>
                   : <p className="mt-1 text-xs text-gray-400">Enter the folder where you will upload this image.</p>
                 }
+                {previewFromSite && previewUrl && (
+                  <p className="mt-1 text-xs text-gray-400">Previewing from <span className="font-mono">{normalizeSiteOrigin(siteInput)}</span>.</p>
+                )}
               </div>
+
+              {offerSiteLoad && (
+                <div className="rounded-lg bg-blue-50 border border-blue-200 p-2.5 space-y-2">
+                  <p className="text-xs text-blue-800">
+                    Is this image already on the live site? Enter the site’s address to load it for the focal-point
+                    picker, or choose the local file above.
+                  </p>
+                  <form
+                    className="flex gap-2"
+                    onSubmit={e => {
+                      e.preventDefault()
+                      loadFromSite(siteInput, dnnPath)
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={siteInput}
+                      onChange={e => setSiteInput(e.target.value)}
+                      placeholder="www.army.edu"
+                      aria-label="Live site address"
+                      className="flex-1 min-w-0 px-2 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!siteInput.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Load
+                    </button>
+                  </form>
+                  {siteLoadFailed && <p className="text-xs text-red-600">{siteLoadFailed}</p>}
+                </div>
+              )}
             </div>
           )}
 
@@ -304,7 +454,13 @@ export function HeroImageTool() {
                   style={{ maxHeight: '300px' }}
                   draggable={false}
                   onLoad={handleNaturalLoad}
-                  onError={() => setState(s => ({ ...s, previewUrl: '' }))}
+                  onError={() => {
+                    if (previewFromSite) {
+                      setSiteLoadFailed(`Couldn’t load ${previewUrl}. Check the site address, or choose the local file above.`)
+                      setPreviewFromSite(false)
+                    }
+                    setState(s => ({ ...s, previewUrl: '' }))
+                  }}
                 />
                 {/* Focal point marker */}
                 <div

@@ -1,11 +1,14 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import {
   parseDvidsInput,
   generateVideoHtml,
   generateVideoPreviewHtml,
   type HlsSource,
 } from '../lib/heroVideo'
+import { parseHeroVideoHtml, type HeroVideoImport } from '../lib/parseHeroVideo'
 import { SectionLabel } from './SectionLabel'
+import { ImportButton, type ImportParseResult } from './ImportButton'
 
 const CAPTION_STORAGE_KEY = 'heroHelper-video-caption-folder'
 const POSTER_STORAGE_KEY = 'heroHelper-video-poster-folder'
@@ -36,6 +39,12 @@ export function HeroVideoTool() {
   const [captionWarned, setCaptionWarned] = useState(false)
   const [posterWarned, setPosterWarned] = useState(false)
   const [copied, setCopied] = useState(false)
+  // App's right-aligned nav-row portal target (holds the Import button).
+  const [navSlot, setNavSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNavSlot(document.getElementById('tool-nav-slot'))
+  }, [])
 
   const { dvidsInput, captionSrc, posterUrl, hlsSource, includeFontAwesomeCdn } = state
 
@@ -90,6 +99,52 @@ export function HeroVideoTool() {
     })
   }
 
+  // ---- import (parse pasted HTML back into the editor) ----
+  // Caption/poster paths are saved defaults, not work; only the video + toggles count.
+  const isPristine = dvidsInput.trim() === '' && hlsSource === 'dnn' && !includeFontAwesomeCdn
+
+  const parseImport = (raw: string): ImportParseResult<HeroVideoImport> => {
+    const out = parseHeroVideoHtml(raw)
+    if (!out) {
+      return {
+        ok: false,
+        error: "Couldn't recognize a hero video in that HTML. Paste the code this tool generated (the whole block).",
+      }
+    }
+    const notes: string[] = []
+    const caption = sanitizeDnnPath(out.captionSrc)
+    const poster = sanitizeDnnPath(out.posterUrl)
+    if (!caption) notes.push('No closed-caption path was found.')
+    else if (caption !== out.captionSrc) notes.push('Characters the caption path field doesn’t allow were removed.')
+    if (!poster) notes.push('No poster image path was found.')
+    else if (poster !== out.posterUrl) notes.push('Characters the poster path field doesn’t allow were removed.')
+    if (out.unknownHlsSrc) {
+      notes.push(`The HLS.js script (${out.unknownHlsSrc}) matched neither option, so “DNN bundled” was selected.`)
+    }
+    return {
+      ok: true,
+      value: { ...out, captionSrc: caption, posterUrl: poster },
+      summary: `Imported DVIDS video ${out.videoId}.`,
+      notes,
+    }
+  }
+
+  const applyImport = (v: HeroVideoImport) => {
+    // Imported paths become the saved defaults too (same as typing them).
+    localStorage.setItem(CAPTION_STORAGE_KEY, v.captionSrc)
+    localStorage.setItem(POSTER_STORAGE_KEY, v.posterUrl)
+    setState({
+      dvidsInput: `https://www.dvidshub.net/video/${v.videoId}`,
+      captionSrc: v.captionSrc,
+      posterUrl: v.posterUrl,
+      hlsSource: v.hlsSource,
+      includeFontAwesomeCdn: v.includeFontAwesomeCdn,
+    })
+    setCaptionWarned(false)
+    setPosterWarned(false)
+    setCopied(false)
+  }
+
   const handleReset = () => {
     setState({
       dvidsInput: '',
@@ -104,6 +159,18 @@ export function HeroVideoTool() {
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
+
+      {navSlot &&
+        createPortal(
+          <ImportButton
+            title="Import from generated HTML"
+            intro="Paste a hero video block this tool generated to recover the DVIDS video, caption and poster paths, and options."
+            parse={parseImport}
+            replaceWarning={isPristine ? null : 'This replaces the video and options currently in the editor.'}
+            onApply={applyImport}
+          />,
+          navSlot,
+        )}
 
       {/* ── LEFT: Inputs ── */}
       <div className="w-full lg:w-80 xl:w-96 shrink-0 space-y-4">

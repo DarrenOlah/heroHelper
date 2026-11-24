@@ -182,3 +182,29 @@ export function computeCropOverlay({
     height: heroVisH / pickerVisH * 100,
   }
 }
+
+// ---- Import helpers (pure) --------------------------------------------------
+
+// Split a site-relative image path into the PC-mode "folder" and "filename" fields.
+// '/Portals/0/Images/hero.jpg' → { folder: '/Portals/0/Images/', file: 'hero.jpg' }.
+// A query string (DNN ?ver=…) stays with the filename.
+export function splitSitePath(path: string): { folder: string; file: string } {
+  const [pathPart, ...rest] = path.split('?')
+  const query = rest.length ? '?' + rest.join('?') : ''
+  const i = pathPart.lastIndexOf('/')
+  return { folder: pathPart.slice(0, i + 1), file: pathPart.slice(i + 1) + query }
+}
+
+// Normalize what a user types as "the live site" into an origin. Accepts a bare
+// host ('www.army.edu'), an origin, or any full URL on the site (e.g. the image's
+// own address) — only the scheme + host are kept. Returns '' when unusable.
+export function normalizeSiteOrigin(input: string): string {
+  const trimmed = input.trim()
+  if (!trimmed) return ''
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^\/+/, '')}`
+  try {
+    const u = new URL(withScheme)
+    if ((u.protocol === 'https:' || u.protocol === 'http:') && u.hostname.includes('.')) return u.origin
+  } catch { /* not a URL */ }
+  return ''
+}

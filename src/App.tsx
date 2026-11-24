@@ -22,21 +22,25 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
       <div className="flex-1 w-full py-2 px-4">
 
-        {/* Nav: Hero Image | Hero Video */}
-        <nav className="mb-4 text-sm" aria-label="Tool selector">
-          {NAV_ITEMS.map((item, i) => (
-            <span key={item.id}>
-              {i > 0 && <span className="mx-2 text-gray-300">|</span>}
-              {item.kind === 'external' ? (
-                <a href={item.href} className="text-gray-500 hover:text-blue-600 hover:underline">{item.label}</a>
-              ) : route === item.id ? (
-                <span className="font-semibold text-blue-600" aria-current="page">{item.label}</span>
-              ) : (
-                <a href={`#/${item.id}`} className="text-gray-500 hover:text-blue-600 hover:underline">{item.label}</a>
-              )}
-            </span>
-          ))}
-        </nav>
+        {/* Nav: Hero Image | Hero Video | … — plus a right-aligned slot the active tool
+            portals its controls (the Import button) into. */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <nav className="text-sm" aria-label="Tool selector">
+            {NAV_ITEMS.map((item, i) => (
+              <span key={item.id}>
+                {i > 0 && <span className="mx-2 text-gray-300">|</span>}
+                {item.kind === 'external' ? (
+                  <a href={item.href} className="text-gray-500 hover:text-blue-600 hover:underline">{item.label}</a>
+                ) : route === item.id ? (
+                  <span className="font-semibold text-blue-600" aria-current="page">{item.label}</span>
+                ) : (
+                  <a href={`#/${item.id}`} className="text-gray-500 hover:text-blue-600 hover:underline">{item.label}</a>
+                )}
+              </span>
+            ))}
+          </nav>
+          <div id="tool-nav-slot" className="flex items-center gap-2" />
+        </div>
 
         {/* Header */}
         <div className="mb-6">
